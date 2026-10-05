@@ -1,0 +1,23 @@
+saida_app/
+PORTARIA/
+
+# Android SDK
+Sdk/
+
+# Python
+__pycache__/
+*.pyc
+
+# Android/Gradle
+.gradle/
+build/
+**/build/
+*.apk
+*.aab
+
+# IDE
+.idea/
+*.iml
+
+# Local configuration
+local.properties

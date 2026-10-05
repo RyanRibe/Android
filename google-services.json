@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "927645738657",
+    "project_id": "pirecal-agendamento",
+    "storage_bucket": "pirecal-agendamento.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:927645738657:android:17f0637c6cf0888c8df2e0",
+        "android_client_info": {
+          "package_name": "br.com.pirecal.agendamento"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCaWK94UDNGb7LiuQlTWtQnR6F_a58gsLQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

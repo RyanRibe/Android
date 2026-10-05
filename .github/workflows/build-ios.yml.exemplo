@@ -1,0 +1,44 @@
+name: Build iOS App From Python Script
+
+on:
+  workflow_dispatch: # Permite que você clique em um botão para rodar quando quiser
+
+jobs:
+  build-ios:
+    runs-on: macos-14 # Abre um Mac real na nuvem do GitHub
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Instalar dependências (Pillow se usar ícones)
+        run: pip install Pillow
+
+      - name: Instalar XcodeGen (Necessário para o seu project.yml)
+        run: brew install xcodegen
+
+      - name: Rodar o seu Script Python
+        run: |
+          # Executa o seu script exatamente como você configurou no código
+          python seu_script.py --url "https://suapaginaweb.com" --name "Meu App iOS" --package "br.com.suaempresa.app" --platform ios
+
+      - name: Gerar Projeto Xcode via XcodeGen
+        run: |
+          cd saida_app/Meu_App_iOS_ios
+          xcodegen generate
+
+      - name: Compilar o Aplicativo (Gera o arquivo para simulador/testes)
+        run: |
+          cd saida_app/Meu_App_iOS_ios
+          xcodebuild -project "Meu App iOS.xcodeproj" -scheme "Meu App iOS" -configuration Debug -sdk iphoneos CODE_SIGNING_ALLOWED=NO
+
+      # Aqui o GitHub te entrega o arquivo final compilado na página do projeto
+      - name: Subir arquivo final
+        uses: actions/artifacts@v4
+        with:
+          name: ios-app-debug
+          path: saida_app/Meu_App_iOS_ios/build/
