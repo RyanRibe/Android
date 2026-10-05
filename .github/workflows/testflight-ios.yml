@@ -173,6 +173,13 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Instalar Apple Transporter
+        run: |
+          TRANSPORTER_URL="https://itunesconnect.apple.com/WebObjects/iTunesConnect.woa/ra/resources/download/public/Transporter__OSX/bin/"
+          curl -fsSL "$TRANSPORTER_URL" -o "$RUNNER_TEMP/itmstransporter.pkg"
+          sudo installer -pkg "$RUNNER_TEMP/itmstransporter.pkg" -target /
+          /usr/local/itms/bin/iTMSTransporter -help >/dev/null
+
       - name: Enviar ao TestFlight
         uses: Apple-Actions/upload-testflight-build@v5
         with:
@@ -180,5 +187,6 @@ jobs:
           issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
           api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
           api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          backend: transporter
           uses-non-exempt-encryption: "false"
           wait-for-processing: "false"
