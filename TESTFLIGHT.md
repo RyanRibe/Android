@@ -18,9 +18,15 @@ envio ao TestFlight.
 
 ## 2. Criar uma chave da API
 
-Em **App Store Connect > Users and Access > Integrations**, crie uma chave com
-papel **App Manager** e baixe o arquivo `AuthKey_XXXXXXXXXX.p8`. A Apple permite
-baixar esse arquivo somente uma vez.
+Em **App Store Connect > Users and Access > Integrations**, clique em **API do
+App Store Connect** no menu esquerdo. Nao use a opcao **Segredo compartilhado**,
+pois ela pertence a compras dentro do app.
+
+Se aparecer **Solicitar acesso**, o Account Holder precisa liberar primeiro o
+acesso da equipe a API. Depois, em **Chaves da equipe**, clique no botao `+`,
+informe um nome como `GitHub Actions` e selecione o papel **Gerente de apps**
+(`App Manager` na interface em ingles). Gere a chave e baixe o arquivo
+`AuthKey_XXXXXXXXXX.p8`. A Apple permite baixar esse arquivo somente uma vez.
 
 Anote o **Issuer ID** e o **Key ID**.
 
@@ -98,3 +104,8 @@ Publicar iOS no TestFlight > Run workflow**, informe a versao `1.0` e execute.
 Quando a Apple terminar o processamento, abra a aba **TestFlight** no App Store
 Connect, adicione o build a um grupo de testes internos e aceite o convite no
 iPhone pelo aplicativo TestFlight.
+
+O workflow encerra depois que o upload e aceito pela Apple. O processamento do
+build continua em segundo plano e pode levar alguns minutos. Consulte a aba
+**TestFlight** e o e-mail da conta para acompanhar a aprovacao tecnica do
+binario.
