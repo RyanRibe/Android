@@ -1,0 +1,184 @@
+name: Publicar iOS no TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: Versao visivel no TestFlight
+        required: true
+        default: "1.0"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testflight-portaria-ios
+  cancel-in-progress: false
+
+env:
+  APP_NAME: Portaria Digital Pirecal
+  APP_URL: https://mobile.pirecal.com.br:8703/
+  BUNDLE_ID: br.com.pirecal.portaria
+  APPLE_TEAM_ID: 28Z29WK4CZ
+  ICON_PATH: ICONE-COLORFUL-APPMOBILE.png
+  SPLASH_PATH: logo.gif
+
+jobs:
+  build-and-upload:
+    name: Assinar e enviar ao TestFlight
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Baixar o repositorio
+        uses: actions/checkout@v7
+
+      - name: Verificar configuracao protegida
+        env:
+          API_ISSUER_ID: ${{ vars.APPSTORE_ISSUER_ID }}
+          API_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID }}
+          API_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          CERTIFICATE_BASE64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
+        run: |
+          test -n "$API_ISSUER_ID" || { echo "Variavel APPSTORE_ISSUER_ID ausente"; exit 1; }
+          test -n "$API_KEY_ID" || { echo "Variavel APPSTORE_API_KEY_ID ausente"; exit 1; }
+          test -n "$API_PRIVATE_KEY" || { echo "Secret APPSTORE_API_PRIVATE_KEY ausente"; exit 1; }
+          test -n "$CERTIFICATE_BASE64" || { echo "Secret APPSTORE_CERTIFICATES_FILE_BASE64 ausente"; exit 1; }
+          test -n "$CERTIFICATE_PASSWORD" || { echo "Secret APPSTORE_CERTIFICATES_PASSWORD ausente"; exit 1; }
+          test -f "$ICON_PATH" || { echo "Icone nao encontrado: $ICON_PATH"; exit 1; }
+          test -f "$SPLASH_PATH" || { echo "Splash nao encontrado: $SPLASH_PATH"; exit 1; }
+
+      - name: Configurar Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install Pillow
+          brew install xcodegen
+
+      - name: Gerar projeto iOS final
+        env:
+          VERSION_NAME: ${{ inputs.version_name }}
+        run: |
+          python gerar_webview_app_com_splash.py \
+            --url "$APP_URL" \
+            --name "$APP_NAME" \
+            --package "$BUNDLE_ID" \
+            --version-code "$GITHUB_RUN_NUMBER" \
+            --version-name "$VERSION_NAME" \
+            --team-id "$APPLE_TEAM_ID" \
+            --platform ios \
+            --icon "$ICON_PATH" \
+            --splash-gif "$SPLASH_PATH" \
+            --out "$RUNNER_TEMP/ios-output"
+
+          PROJECT_YML="$(find "$RUNNER_TEMP/ios-output" -name project.yml -print -quit)"
+          test -n "$PROJECT_YML"
+          PROJECT_DIR="$(dirname "$PROJECT_YML")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Gerar projeto do Xcode
+        run: |
+          cd "$PROJECT_DIR"
+          xcodegen generate
+          XCODE_PROJECT="$(find . -maxdepth 1 -name '*.xcodeproj' -print -quit)"
+          test -n "$XCODE_PROJECT"
+          SCHEME="$(xcodebuild -project "$XCODE_PROJECT" -list -json | python -c 'import json,sys; print(json.load(sys.stdin)["project"]["schemes"][0])')"
+          test -n "$SCHEME"
+          echo "XCODE_PROJECT=$XCODE_PROJECT" >> "$GITHUB_ENV"
+          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
+
+      - name: Importar certificado de distribuicao
+        uses: Apple-Actions/import-codesign-certs@v7
+        with:
+          p12-file-base64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
+          p12-password: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
+
+      - name: Baixar provisioning profile
+        uses: Apple-Actions/download-provisioning-profiles@v6
+        with:
+          bundle-id: ${{ env.BUNDLE_ID }}
+          profile-type: IOS_APP_STORE
+          issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+
+      - name: Validar provisioning profile
+        run: |
+          PROFILE_PATH="$(find "$HOME/Library/MobileDevice/Provisioning Profiles" -name '*.mobileprovision' -print -quit)"
+          test -n "$PROFILE_PATH" || { echo "Provisioning profile App Store nao encontrado"; exit 1; }
+
+          security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
+          PROFILE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/profile.plist")"
+          PROFILE_TEAM="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$RUNNER_TEMP/profile.plist")"
+          PROFILE_APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$RUNNER_TEMP/profile.plist")"
+
+          test "$PROFILE_TEAM" = "$APPLE_TEAM_ID" || { echo "Team ID do profile nao corresponde"; exit 1; }
+          test "$PROFILE_APP_ID" = "$APPLE_TEAM_ID.$BUNDLE_ID" || { echo "Bundle ID do profile nao corresponde"; exit 1; }
+          echo "PROFILE_NAME=$PROFILE_NAME" >> "$GITHUB_ENV"
+
+      - name: Criar archive assinado
+        env:
+          VERSION_NAME: ${{ inputs.version_name }}
+        run: |
+          cd "$PROJECT_DIR"
+          xcodebuild \
+            -project "$XCODE_PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/PortariaDigitalPirecal.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            MARKETING_VERSION="$VERSION_NAME" \
+            clean archive
+
+      - name: Exportar IPA
+        run: |
+          EXPORT_OPTIONS="$RUNNER_TEMP/ExportOptions.plist"
+          /usr/libexec/PlistBuddy -c 'Add :method string app-store-connect' "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c 'Add :destination string export' "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c 'Add :signingStyle string manual' "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :teamID string $APPLE_TEAM_ID" "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c 'Add :stripSwiftSymbols bool true' "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c 'Add :uploadSymbols bool true' "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c 'Add :manageAppVersionAndBuildNumber bool false' "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c 'Add :provisioningProfiles dict' "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$BUNDLE_ID string $PROFILE_NAME" "$EXPORT_OPTIONS"
+
+          xcodebuild \
+            -exportArchive \
+            -archivePath "$RUNNER_TEMP/PortariaDigitalPirecal.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$EXPORT_OPTIONS"
+
+          IPA_PATH="$(find "$RUNNER_TEMP/export" -name '*.ipa' -print -quit)"
+          test -n "$IPA_PATH" || { echo "IPA nao foi gerado"; exit 1; }
+          echo "IPA_PATH=$IPA_PATH" >> "$GITHUB_ENV"
+
+      - name: Guardar IPA da execucao
+        uses: actions/upload-artifact@v7
+        with:
+          name: portaria-digital-pirecal-ios-${{ github.run_number }}
+          path: ${{ env.IPA_PATH }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enviar ao TestFlight
+        uses: Apple-Actions/upload-testflight-build@v5
+        with:
+          app-path: ${{ env.IPA_PATH }}
+          issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          uses-non-exempt-encryption: "false"
+          wait-for-processing: "true"

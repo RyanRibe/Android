@@ -6,17 +6,22 @@ on:
       app_url:
         description: URL HTTPS que o aplicativo abrirá
         required: true
-        default: https://example.com
+        default: https://mobile.pirecal.com.br:8703/
         type: string
       app_name:
         description: Nome do aplicativo
         required: true
-        default: Pirecal Agendamento
+        default: Portaria Digital Pirecal
         type: string
       bundle_id:
         description: Bundle ID do aplicativo
         required: true
-        default: br.com.pirecal.agendamento
+        default: br.com.pirecal.portaria
+        type: string
+      version_name:
+        description: Versao visivel do aplicativo
+        required: true
+        default: "1.0"
         type: string
 
 permissions:
@@ -25,7 +30,7 @@ permissions:
 jobs:
   build-ios-simulator:
     name: Compilar para iOS Simulator
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
 
     steps:
@@ -48,12 +53,17 @@ jobs:
           APP_URL: ${{ inputs.app_url }}
           APP_NAME: ${{ inputs.app_name }}
           BUNDLE_ID: ${{ inputs.bundle_id }}
+          VERSION_NAME: ${{ inputs.version_name }}
         run: |
-          python gerar_webview_app_assigned.py \
+          python gerar_webview_app_com_splash.py \
             --url "$APP_URL" \
             --name "$APP_NAME" \
             --package "$BUNDLE_ID" \
+            --version-code "$GITHUB_RUN_NUMBER" \
+            --version-name "$VERSION_NAME" \
             --platform ios \
+            --icon "ICONE-COLORFUL-APPMOBILE.png" \
+            --splash-gif "logo.gif" \
             --out "$RUNNER_TEMP/ios-output"
 
           PROJECT_YML="$(find "$RUNNER_TEMP/ios-output" -name project.yml -print -quit)"
