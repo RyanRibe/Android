@@ -227,6 +227,14 @@ window.PirecalApp?.setSystemBars({ color: '#0a1220', style: 'light' });
 window.PirecalApp?.setSystemBars({ color: '#ffffff', style: 'dark' });
 ```
 
+### Validação de formulários no iPhone
+
+O balão padrão de campos `required` do WKWebView pode aparecer sob a câmera/notch quando a página ocupa a tela inteira. O app iOS intercepta apenas o evento HTML `invalid`, suprime esse balão e apresenta um aviso vermelho abaixo de `safe-area-inset-top`. O primeiro campo inválido recebe destaque, é centralizado com rolagem suave e ganha foco; depois que o valor se torna válido, o destaque e o aviso desaparecem. Esse comportamento é injetado somente no WKWebView e não altera o Android ou o acesso pelo navegador.
+
+### Limites de zoom no iPhone
+
+O app inicia a viewport na escala `1` e mantém `minimum-scale=1`, impedindo que a página seja reduzida para menos de 100% ou fique menor que a tela. A pinça continua habilitada para ampliar o conteúdo, até `maximum-scale=5`, e permite retornar à escala original. A rolagem e os controles continuam funcionando normalmente. Esses limites existem somente no app iOS.
+
 ## 14. Problemas encontrados
 
 ### `scanner: mapping values are not allowed in this context`

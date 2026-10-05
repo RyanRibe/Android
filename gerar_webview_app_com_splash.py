@@ -2732,10 +2732,14 @@ def create_ios_project(
       if (!channel) return;
 
       const normalizeViewport = () => {
-        const viewport = document.querySelector('meta[name="viewport"]');
-        if (viewport && !/viewport-fit\s*=\s*cover/i.test(viewport.content)) {
-          viewport.content += ', viewport-fit=cover';
+        const lockedViewport = 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=5, user-scalable=yes, viewport-fit=cover';
+        let viewport = document.querySelector('meta[name="viewport"]');
+        if (!viewport) {
+          viewport = document.createElement('meta');
+          viewport.name = 'viewport';
+          (document.head || document.documentElement).appendChild(viewport);
         }
+        viewport.content = lockedViewport;
       };
 
       const luminance = (color) => {
@@ -2761,8 +2765,110 @@ def create_ios_project(
         }
       });
 
+      const validationToastId = 'pirecal-ios-validation-toast';
+      let validationCycleActive = false;
+      let validationToastTimer = 0;
+      let activeInvalidField = null;
+
+      const ensureValidationStyles = () => {
+        if (document.getElementById('pirecal-ios-validation-styles')) return;
+        const style = document.createElement('style');
+        style.id = 'pirecal-ios-validation-styles';
+        style.textContent = `
+          #${validationToastId} {
+            position: fixed;
+            z-index: 2147483647;
+            top: calc(env(safe-area-inset-top, 0px) + 12px);
+            left: 12px;
+            right: 12px;
+            max-width: 560px;
+            margin: 0 auto;
+            padding: 12px 16px;
+            border: 1px solid rgba(255,255,255,.28);
+            border-radius: 14px;
+            background: #b42318;
+            color: #fff;
+            box-shadow: 0 10px 30px rgba(0,0,0,.28);
+            font: 600 14px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            text-align: left;
+            pointer-events: none;
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: opacity .18s ease, transform .18s ease;
+          }
+          #${validationToastId}.is-visible {
+            opacity: 1;
+            transform: translateY(0);
+          }
+          .pirecal-ios-invalid-field {
+            outline: 3px solid #dc2626 !important;
+            outline-offset: 2px !important;
+            scroll-margin-top: calc(env(safe-area-inset-top, 0px) + 96px) !important;
+            scroll-margin-bottom: calc(env(safe-area-inset-bottom, 0px) + 96px) !important;
+          }
+        `;
+        (document.head || document.documentElement).appendChild(style);
+      };
+
+      const showValidationToast = (message) => {
+        ensureValidationStyles();
+        let toast = document.getElementById(validationToastId);
+        if (!toast) {
+          toast = document.createElement('div');
+          toast.id = validationToastId;
+          toast.setAttribute('role', 'alert');
+          toast.setAttribute('aria-live', 'assertive');
+          document.body.appendChild(toast);
+        }
+        toast.textContent = message || 'Preencha o campo obrigatório.';
+        toast.classList.add('is-visible');
+        clearTimeout(validationToastTimer);
+        validationToastTimer = setTimeout(() => toast.classList.remove('is-visible'), 4500);
+      };
+
+      const revealInvalidField = (field) => {
+        if (!(field instanceof HTMLElement)) return;
+        if (activeInvalidField && activeInvalidField !== field) {
+          activeInvalidField.classList.remove('pirecal-ios-invalid-field');
+        }
+        activeInvalidField = field;
+        field.classList.add('pirecal-ios-invalid-field');
+        field.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+
+        setTimeout(() => {
+          try { field.focus({ preventScroll: true }); } catch (_) { field.focus(); }
+          setTimeout(() => field.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' }), 180);
+        }, 260);
+
+        showValidationToast(field.validationMessage || 'Preencha o campo obrigatório.');
+      };
+
+      const installFormValidation = () => {
+        document.addEventListener('invalid', (event) => {
+          event.preventDefault();
+          if (validationCycleActive) return;
+          validationCycleActive = true;
+          const field = event.target;
+          requestAnimationFrame(() => revealInvalidField(field));
+          setTimeout(() => { validationCycleActive = false; }, 600);
+        }, true);
+
+        const clearResolvedField = (event) => {
+          const field = event.target;
+          if (field === activeInvalidField && field.validity?.valid) {
+            field.classList.remove('pirecal-ios-invalid-field');
+            activeInvalidField = null;
+            document.getElementById(validationToastId)?.classList.remove('is-visible');
+          }
+        };
+        document.addEventListener('input', clearResolvedField, true);
+        document.addEventListener('change', clearResolvedField, true);
+      };
+
       const start = () => {
         normalizeViewport();
+        ensureValidationStyles();
+        installFormValidation();
         sync();
         new MutationObserver(sync).observe(document.documentElement, {
           subtree: true,
@@ -2826,6 +2932,9 @@ def create_ios_project(
             webView.isOpaque = false
             webView.backgroundColor = .white
             webView.scrollView.contentInsetAdjustmentBehavior = .never
+            webView.scrollView.pinchGestureRecognizer?.isEnabled = true
+            webView.scrollView.minimumZoomScale = 1.0
+            webView.scrollView.maximumZoomScale = 5.0
 
             progressView.translatesAutoresizingMaskIntoConstraints = false
             progressView.progress = 0
