@@ -32,6 +32,7 @@ env:
   PUSH_REGISTER_URL: https://mobile.pirecal.com.br:8703/api/register_device.php
   IOS_DEPLOYMENT_TARGET: "15.0"
   IOS_FIREBASE_SDK_VERSION: "12.19.2"
+  # Fallback ate a pagina informar sua cor pelo meta theme-color.
   IOS_SYSTEM_BAR_COLOR: "#075D2B"
   IOS_SPLASH_BACKGROUND_COLOR: "#FFFFFF"
   IOS_CAMERA_USAGE_DESCRIPTION: Use a camera para fotografar anexos da portaria.

@@ -200,7 +200,7 @@ O job usa `wait-for-processing: false`: verde confirma que a Apple recebeu o IPA
 Checklist:
 
 - splash completa por aproximadamente 3,75 segundos, sem recorte e sobre fundo branco;
-- áreas seguras superior e inferior em `#075D2B`;
+- conteúdo e tema da página ocupando também as áreas superior e inferior do iPhone;
 - botão **Câmera** visível e abrindo a câmera traseira;
 - uploads de foto e documentos funcionando;
 - token com `platform = ios` em `user_push_tokens`;
@@ -214,9 +214,18 @@ Foi atualizado `\\172.31.200.67\dmz\Xampp\htdocs\PORTARIA_DIGITAL\includes\anexo
 
 ## 13. Splash e barras
 
-O GIF possui 75 frames de 50 ms, totalizando 3.750 ms, e fundo transparente. Antes, o gerador achatava o GIF sobre azul `#487cac`, usava `object-fit: cover` e removia a splash após somente 1,5 segundo se a página carregasse rápido.
+O GIF possui 75 frames de 50 ms, totalizando 3.750 ms. A cor interna dos pixels transparentes do arquivo original é azul e alguns renderizadores podem exibi-la antes de aplicar a transparência. Agora o gerador achata todos os quadros diretamente sobre `IOS_SPLASH_BACKGROUND_COLOR` (branco neste app), eliminando essa passagem azul.
 
-Agora ele preserva a transparência, recorta margens, usa `scaleAspectFit`/`contain` e respeita toda a animação. As áreas seguras usam `IOS_SYSTEM_BAR_COLOR`.
+O gerador recorta as margens, usa `scaleAspectFit`/`contain` e respeita toda a animação. O Launch Screen passou a se chamar `LaunchScreenWhite`, evitando reutilizar a antiga tela azul armazenada pelo iOS. Ao testar essa alteração pela primeira vez, remova do iPhone a versão anterior antes de instalar o novo build para limpar o cache visual do sistema.
+
+A WebView ocupa a tela de ponta a ponta, sem faixas nativas coloridas. O portal já usa `viewport-fit=cover` e `env(safe-area-inset-*)`, portanto os controles continuam fora do recorte e do indicador inferior. O app observa o `<meta name="theme-color">`: quando `theme.js` troca entre `#075d2b` e `#0a1220`, o fundo sob as áreas do sistema e o contraste dos ícones são atualizados. `IOS_SYSTEM_BAR_COLOR` é apenas a cor de fallback antes de a página carregar.
+
+Se outro portal precisar controlar explicitamente o contraste, também pode chamar:
+
+```javascript
+window.PirecalApp?.setSystemBars({ color: '#0a1220', style: 'light' });
+window.PirecalApp?.setSystemBars({ color: '#ffffff', style: 'dark' });
+```
 
 ## 14. Problemas encontrados
 

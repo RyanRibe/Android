@@ -2281,7 +2281,13 @@ def generate_ios_assets(
     else:
         crop_box = (0, 0, splash.width, splash.height)
 
-    cropped_frames = [frame.crop(crop_box) for frame in frames]
+    splash_rgb = tuple(int(splash_background_color[index:index + 2], 16) for index in (1, 3, 5))
+    cropped_frames = []
+    for frame in frames:
+        cropped = frame.crop(crop_box)
+        flattened = Image.new("RGBA", cropped.size, (*splash_rgb, 255))
+        flattened.alpha_composite(cropped)
+        cropped_frames.append(flattened)
     first_frame = cropped_frames[0]
 
     splash_images = []
@@ -2333,7 +2339,7 @@ def generate_ios_assets(
     blue = int(splash_background_color[5:7], 16) / 255.0
 
     write_file(
-        sources_dir / "LaunchScreen.storyboard",
+        sources_dir / "LaunchScreenWhite.storyboard",
         """
         <?xml version="1.0" encoding="UTF-8"?>
         <document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="26000" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" initialViewController="launch-controller">
@@ -2570,7 +2576,7 @@ def create_ios_project(
             <key>NSPhotoLibraryUsageDescription</key>
             <string>{html.escape(photo_library_usage_description.strip())}</string>
             <key>UILaunchStoryboardName</key>
-            <string>LaunchScreen</string>
+            <string>LaunchScreenWhite</string>
             <key>UISupportedInterfaceOrientations</key>
             <array>
                 <string>UIInterfaceOrientationPortrait</string>
@@ -2720,11 +2726,62 @@ def create_ios_project(
         else ""
     )
 
+    system_bars_javascript = r"""
+    (() => {
+      const channel = window.webkit?.messageHandlers?.systemBars;
+      if (!channel) return;
+
+      const normalizeViewport = () => {
+        const viewport = document.querySelector('meta[name="viewport"]');
+        if (viewport && !/viewport-fit\s*=\s*cover/i.test(viewport.content)) {
+          viewport.content += ', viewport-fit=cover';
+        }
+      };
+
+      const luminance = (color) => {
+        const match = String(color || '').trim().match(/^#([0-9a-f]{6})$/i);
+        if (!match) return 0;
+        const rgb = [0, 2, 4].map((index) => parseInt(match[1].slice(index, index + 2), 16) / 255);
+        const linear = rgb.map((value) => value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4));
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+      };
+
+      const sync = () => {
+        const meta = document.querySelector('meta[name="theme-color"]');
+        const color = meta?.content || '#__SYSTEM_BAR_HEX__';
+        channel.postMessage({ color, style: luminance(color) > 0.45 ? 'dark' : 'light' });
+      };
+
+      window.PirecalApp = window.PirecalApp || {};
+      Object.assign(window.PirecalApp, {
+        platform: 'ios',
+        native: true,
+        setSystemBars(options = {}) {
+          channel.postMessage(options);
+        }
+      });
+
+      const start = () => {
+        normalizeViewport();
+        sync();
+        new MutationObserver(sync).observe(document.documentElement, {
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['content', 'class', 'style', 'data-theme']
+        });
+      };
+
+      document.readyState === 'loading'
+        ? document.addEventListener('DOMContentLoaded', start, { once: true })
+        : start();
+    })();
+    """.replace("__SYSTEM_BAR_HEX__", system_bar_color.lstrip("#"))
+
     view_controller = """
     import UIKit
     import WebKit
 
-    class ViewController: UIViewController, WKNavigationDelegate {
+    class ViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHandler {
         private let homeURL = URL(string: __URL__)!
         private var webView: WKWebView!
         private let progressView = UIProgressView(progressViewStyle: .default)
@@ -2732,9 +2789,9 @@ def create_ios_project(
         private var splashStartedAt = Date()
         __FIREBASE_OBSERVER_PROPERTY__
 
-        override var preferredStatusBarStyle: UIStatusBarStyle {
-            .lightContent
-        }
+        private var currentStatusBarStyle: UIStatusBarStyle = .darkContent
+
+        override var preferredStatusBarStyle: UIStatusBarStyle { currentStatusBarStyle }
 
         override func viewDidLoad() {
             super.viewDidLoad()
@@ -2755,11 +2812,20 @@ def create_ios_project(
             )
             config.userContentController.addUserScript(nativeAppMarker)
 
+            let systemBarsBridge = WKUserScript(
+                source: __SYSTEM_BARS_JAVASCRIPT__,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true
+            )
+            config.userContentController.addUserScript(systemBarsBridge)
+            config.userContentController.add(self, name: "systemBars")
+
             webView = WKWebView(frame: .zero, configuration: config)
             webView.navigationDelegate = self
             webView.translatesAutoresizingMaskIntoConstraints = false
             webView.isOpaque = false
             webView.backgroundColor = .white
+            webView.scrollView.contentInsetAdjustmentBehavior = .never
 
             progressView.translatesAutoresizingMaskIntoConstraints = false
             progressView.progress = 0
@@ -2769,10 +2835,10 @@ def create_ios_project(
             view.addSubview(progressView)
 
             NSLayoutConstraint.activate([
-                webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+                webView.topAnchor.constraint(equalTo: view.topAnchor),
                 webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                webView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+                webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
                 progressView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
                 progressView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -2847,6 +2913,19 @@ def create_ios_project(
             hideSplash()
         }
 
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == "systemBars", let options = message.body as? [String: Any] else { return }
+
+            if let color = options["color"] as? String, let parsedColor = UIColor(hexString: color) {
+                view.backgroundColor = parsedColor
+            }
+
+            if let style = options["style"] as? String {
+                currentStatusBarStyle = style.lowercased() == "dark" ? .darkContent : .lightContent
+                setNeedsStatusBarAppearanceUpdate()
+            }
+        }
+
         override func observeValue(
             forKeyPath keyPath: String?,
             of object: Any?,
@@ -2860,8 +2939,23 @@ def create_ios_project(
         }
 
         deinit {
+            webView?.configuration.userContentController.removeScriptMessageHandler(forName: "systemBars")
             webView?.removeObserver(self, forKeyPath: "estimatedProgress")
             __FIREBASE_CLEANUP__
+        }
+    }
+
+    private extension UIColor {
+        convenience init?(hexString: String) {
+            let value = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalized = value.hasPrefix("#") ? String(value.dropFirst()) : value
+            guard normalized.count == 6, let number = UInt64(normalized, radix: 16) else { return nil }
+            self.init(
+                red: CGFloat((number >> 16) & 0xff) / 255.0,
+                green: CGFloat((number >> 8) & 0xff) / 255.0,
+                blue: CGFloat(number & 0xff) / 255.0,
+                alpha: 1.0
+            )
         }
     }
     """
@@ -2873,6 +2967,7 @@ def create_ios_project(
         .replace("__BAR_RED__", f"{bar_red:.8f}")
         .replace("__BAR_GREEN__", f"{bar_green:.8f}")
         .replace("__BAR_BLUE__", f"{bar_blue:.8f}")
+        .replace("__SYSTEM_BARS_JAVASCRIPT__", json.dumps(textwrap.dedent(system_bars_javascript).strip()))
         .replace("__SPLASH_RED__", f"{splash_red:.8f}")
         .replace("__SPLASH_GREEN__", f"{splash_green:.8f}")
         .replace("__SPLASH_BLUE__", f"{splash_blue:.8f}")
