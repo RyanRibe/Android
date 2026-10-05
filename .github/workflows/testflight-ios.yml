@@ -17,12 +17,28 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # ===========================================================================
+  # CONFIGURACAO DO APLICATIVO — altere este bloco para reutilizar o workflow.
+  # Credenciais permanecem em Settings > Secrets and variables > Actions.
+  # ===========================================================================
   APP_NAME: Portaria Digital Pirecal
   APP_URL: https://mobile.pirecal.com.br:8703/
   BUNDLE_ID: br.com.pirecal.portaria
   APPLE_TEAM_ID: 28Z29WK4CZ
+  GENERATOR_SCRIPT: gerar_webview_app_com_splash.py
   ICON_PATH: ICONE-COLORFUL-APPMOBILE.png
   SPLASH_PATH: logo.gif
+  FIREBASE_PLIST_PATH: GoogleService-Info.plist
+  PUSH_REGISTER_URL: https://mobile.pirecal.com.br:8703/api/register_device.php
+  IOS_DEPLOYMENT_TARGET: "15.0"
+  IOS_FIREBASE_SDK_VERSION: "12.19.2"
+  IOS_SYSTEM_BAR_COLOR: "#075D2B"
+  IOS_SPLASH_BACKGROUND_COLOR: "#FFFFFF"
+  IOS_CAMERA_USAGE_DESCRIPTION: Use a camera para fotografar anexos da portaria.
+  IOS_PHOTO_LIBRARY_USAGE_DESCRIPTION: Selecione fotos para anexar aos registros da portaria.
+  PYTHON_VERSION: "3.12"
+  ARCHIVE_NAME: WebViewApp
+  ARTIFACT_PREFIX: webview-app-ios
 
 jobs:
   build-and-upload:
@@ -47,13 +63,15 @@ jobs:
           test -n "$API_PRIVATE_KEY" || { echo "Secret APPSTORE_API_PRIVATE_KEY ausente"; exit 1; }
           test -n "$CERTIFICATE_BASE64" || { echo "Secret APPSTORE_CERTIFICATES_FILE_BASE64 ausente"; exit 1; }
           test -n "$CERTIFICATE_PASSWORD" || { echo "Secret APPSTORE_CERTIFICATES_PASSWORD ausente"; exit 1; }
+          test -f "$GENERATOR_SCRIPT" || { echo "Gerador nao encontrado: $GENERATOR_SCRIPT"; exit 1; }
           test -f "$ICON_PATH" || { echo "Icone nao encontrado: $ICON_PATH"; exit 1; }
           test -f "$SPLASH_PATH" || { echo "Splash nao encontrado: $SPLASH_PATH"; exit 1; }
+          test -f "$FIREBASE_PLIST_PATH" || { echo "Firebase iOS nao encontrado: $FIREBASE_PLIST_PATH"; exit 1; }
 
       - name: Configurar Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Instalar dependencias
         run: |
@@ -65,7 +83,7 @@ jobs:
         env:
           VERSION_NAME: ${{ inputs.version_name }}
         run: |
-          python gerar_webview_app_com_splash.py \
+          python "$GENERATOR_SCRIPT" \
             --url "$APP_URL" \
             --name "$APP_NAME" \
             --package "$BUNDLE_ID" \
@@ -75,6 +93,14 @@ jobs:
             --platform ios \
             --icon "$ICON_PATH" \
             --splash-gif "$SPLASH_PATH" \
+            --firebase-plist "$FIREBASE_PLIST_PATH" \
+            --push-register-url "$PUSH_REGISTER_URL" \
+            --ios-deployment-target "$IOS_DEPLOYMENT_TARGET" \
+            --ios-firebase-sdk-version "$IOS_FIREBASE_SDK_VERSION" \
+            --ios-system-bar-color "$IOS_SYSTEM_BAR_COLOR" \
+            --ios-splash-background-color "$IOS_SPLASH_BACKGROUND_COLOR" \
+            --ios-camera-usage-description "$IOS_CAMERA_USAGE_DESCRIPTION" \
+            --ios-photo-library-usage-description "$IOS_PHOTO_LIBRARY_USAGE_DESCRIPTION" \
             --out "$RUNNER_TEMP/ios-output"
 
           PROJECT_YML="$(find "$RUNNER_TEMP/ios-output" -name project.yml -print -quit)"
@@ -133,7 +159,7 @@ jobs:
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
-            -archivePath "$RUNNER_TEMP/PortariaDigitalPirecal.xcarchive" \
+            -archivePath "$RUNNER_TEMP/$ARCHIVE_NAME.xcarchive" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Apple Distribution" \
@@ -157,7 +183,7 @@ jobs:
 
           xcodebuild \
             -exportArchive \
-            -archivePath "$RUNNER_TEMP/PortariaDigitalPirecal.xcarchive" \
+            -archivePath "$RUNNER_TEMP/$ARCHIVE_NAME.xcarchive" \
             -exportPath "$RUNNER_TEMP/export" \
             -exportOptionsPlist "$EXPORT_OPTIONS"
 
@@ -168,7 +194,7 @@ jobs:
       - name: Guardar IPA da execucao
         uses: actions/upload-artifact@v7
         with:
-          name: portaria-digital-pirecal-ios-${{ github.run_number }}
+          name: ${{ env.ARTIFACT_PREFIX }}-${{ github.run_number }}
           path: ${{ env.IPA_PATH }}
           if-no-files-found: error
           retention-days: 14

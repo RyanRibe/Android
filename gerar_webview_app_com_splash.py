@@ -5,6 +5,7 @@ import argparse
 import html
 import json
 import platform
+import plistlib
 import re
 import shutil
 import stat
@@ -16,6 +17,32 @@ from urllib.parse import urlparse
 from PIL import Image, ImageOps, ImageSequence
 
 
+# =============================================================================
+# CONFIGURACAO PADRAO DO APLICATIVO
+#
+# Estes valores permitem executar este arquivo diretamente. Qualquer opcao
+# informada na linha de comando (como faz o GitHub Actions) tem prioridade.
+# Para adaptar o gerador a outro app, altere este bloco e/ou o bloco `env:` do
+# workflow `.github/workflows/testflight-ios.yml`.
+# =============================================================================
+DEFAULT_APP_URL = "https://mobile.pirecal.com.br:8703/"
+DEFAULT_APP_NAME = "Portaria Digital Pirecal"
+DEFAULT_PACKAGE = "br.com.pirecal.portaria"
+DEFAULT_VERSION_CODE = 1
+DEFAULT_VERSION_NAME = "1.0"
+DEFAULT_APPLE_TEAM_ID = "28Z29WK4CZ"
+DEFAULT_ICON_PATH = "ICONE-COLORFUL-APPMOBILE.png"
+DEFAULT_SPLASH_PATH = "logo.gif"
+DEFAULT_IOS_FIREBASE_PLIST = "GoogleService-Info.plist"
+DEFAULT_PUSH_REGISTER_URL = "https://mobile.pirecal.com.br:8703/api/register_device.php"
+DEFAULT_IOS_DEPLOYMENT_TARGET = "15.0"
+DEFAULT_IOS_FIREBASE_SDK_VERSION = "12.19.2"
+DEFAULT_IOS_SYSTEM_BAR_COLOR = "#075D2B"
+DEFAULT_IOS_SPLASH_BACKGROUND_COLOR = "#FFFFFF"
+DEFAULT_IOS_CAMERA_USAGE_DESCRIPTION = "Use a camera para fotografar anexos da portaria."
+DEFAULT_IOS_PHOTO_LIBRARY_USAGE_DESCRIPTION = "Selecione fotos para anexar aos registros da portaria."
+
+# Configuracao Android.
 DEFAULT_AGP_VERSION = "9.1.0"
 DEFAULT_GRADLE_VERSION = "9.3.1"
 DEFAULT_COMPILE_SDK = 36
@@ -47,6 +74,18 @@ def validate_url(url: str):
 def validate_package(package: str):
     if not re.fullmatch(r"[a-zA-Z][\w]*(\.[a-zA-Z][\w]*)+", package):
         raise SystemExit("Package inválido. Use algo como: br.com.suaempresa.agendamento")
+
+
+def validate_hex_color(value: str, option_name: str) -> str:
+    normalized = value.strip().upper()
+    if not re.fullmatch(r"#[0-9A-F]{6}", normalized):
+        raise SystemExit(f"{option_name} precisa usar o formato #RRGGBB")
+    return normalized
+
+
+def swift_color_components(value: str) -> tuple[float, float, float]:
+    normalized = validate_hex_color(value, "Cor")
+    return tuple(int(normalized[index:index + 2], 16) / 255.0 for index in (1, 3, 5))
 
 
 def safe_project_name(name: str):
@@ -2139,7 +2178,12 @@ def build_android_aab(project_dir: Path, gradle_version: str):
         print(f" - {aab.resolve()}")
 
 
-def generate_ios_assets(sources_dir: Path, icon_path: str, splash_gif: str):
+def generate_ios_assets(
+    sources_dir: Path,
+    icon_path: str,
+    splash_gif: str,
+    splash_background_color: str,
+) -> int:
     icon_source = Path(icon_path).expanduser().resolve()
     splash_source = Path(splash_gif).expanduser().resolve()
 
@@ -2200,19 +2244,64 @@ def generate_ios_assets(sources_dir: Path, icon_path: str, splash_gif: str):
         ),
     )
 
-    splash = Image.open(splash_source)
-    splash.seek(0)
-    splash_frame = splash.convert("RGBA")
-    background = Image.new("RGBA", splash_frame.size, (72, 124, 172, 255))
-    background.alpha_composite(splash_frame)
-    splash_frame = background.convert("RGB")
+    try:
+        splash = Image.open(splash_source)
+    except Exception as exc:
+        raise SystemExit(f"Nao foi possivel abrir a splash iOS: {exc}") from exc
+
+    if (splash.format or "").upper() != "GIF":
+        raise SystemExit(f"A splash iOS precisa ser um GIF: {splash_source}")
+
+    frame_count = getattr(splash, "n_frames", 1)
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+    visible_boxes = []
+
+    for frame_index in range(frame_count):
+        splash.seek(frame_index)
+        rgba = splash.convert("RGBA")
+        alpha_box = rgba.getchannel("A").getbbox()
+        if alpha_box:
+            visible_boxes.append(alpha_box)
+        frames.append(rgba)
+        durations.append(int(splash.info.get("duration", 50) or 50))
+
+    if visible_boxes:
+        left = min(box[0] for box in visible_boxes)
+        top = min(box[1] for box in visible_boxes)
+        right = max(box[2] for box in visible_boxes)
+        bottom = max(box[3] for box in visible_boxes)
+        padding = max(12, round(min(splash.width, splash.height) * 0.025))
+        crop_box = (
+            max(0, left - padding),
+            max(0, top - padding),
+            min(splash.width, right + padding),
+            min(splash.height, bottom + padding),
+        )
+    else:
+        crop_box = (0, 0, splash.width, splash.height)
+
+    cropped_frames = [frame.crop(crop_box) for frame in frames]
+    first_frame = cropped_frames[0]
 
     splash_images = []
-    for scale, dimensions in (("1x", (640, 360)), ("2x", (1280, 720)), ("3x", (1920, 1080))):
+    for scale, canvas_size in (("1x", 512), ("2x", 1024), ("3x", 1536)):
         filename = f"splash-launch@{scale}.png"
         output = splash_dir / filename
         output.parent.mkdir(parents=True, exist_ok=True)
-        ImageOps.fit(splash_frame, dimensions, method=Image.LANCZOS).save(output, "PNG")
+        launch_canvas = Image.new("RGBA", (canvas_size, canvas_size), (255, 255, 255, 0))
+        safe_size = round(canvas_size * 0.72)
+        ratio = min(safe_size / first_frame.width, safe_size / first_frame.height)
+        logo_size = (
+            max(1, round(first_frame.width * ratio)),
+            max(1, round(first_frame.height * ratio)),
+        )
+        logo = first_frame.resize(logo_size, Image.Resampling.LANCZOS)
+        launch_canvas.alpha_composite(
+            logo,
+            ((canvas_size - logo.width) // 2, (canvas_size - logo.height) // 2),
+        )
+        launch_canvas.save(output, "PNG", optimize=True)
         splash_images.append(
             {"idiom": "universal", "scale": scale, "filename": filename}
         )
@@ -2228,7 +2317,20 @@ def generate_ios_assets(sources_dir: Path, icon_path: str, splash_gif: str):
         ),
     )
 
-    shutil.copy2(splash_source, sources_dir / "splash.gif")
+    animated_target = sources_dir / "splash.gif"
+    cropped_frames[0].save(
+        animated_target,
+        save_all=True,
+        append_images=cropped_frames[1:],
+        duration=durations,
+        loop=int(splash.info.get("loop", 0) or 0),
+        disposal=2,
+        optimize=False,
+    )
+
+    red = int(splash_background_color[1:3], 16) / 255.0
+    green = int(splash_background_color[3:5], 16) / 255.0
+    blue = int(splash_background_color[5:7], 16) / 255.0
 
     write_file(
         sources_dir / "LaunchScreen.storyboard",
@@ -2248,12 +2350,12 @@ def generate_ios_assets(sources_dir: Path, icon_path: str, splash_gif: str):
                             <view key="view" contentMode="scaleToFill" id="launch-view">
                                 <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
                                 <subviews>
-                                    <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFill" image="SplashLaunch" translatesAutoresizingMaskIntoConstraints="NO" id="launch-image">
+                                    <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" image="SplashLaunch" translatesAutoresizingMaskIntoConstraints="NO" id="launch-image">
                                         <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
                                     </imageView>
                                 </subviews>
                                 <viewLayoutGuide key="safeArea" id="launch-safe-area"/>
-                                <color key="backgroundColor" red="0.2823529412" green="0.4862745098" blue="0.6745098039" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                                <color key="backgroundColor" red="__SPLASH_RED__" green="__SPLASH_GREEN__" blue="__SPLASH_BLUE__" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
                                 <constraints>
                                     <constraint firstItem="launch-image" firstAttribute="leading" secondItem="launch-view" secondAttribute="leading" id="launch-leading"/>
                                     <constraint firstAttribute="trailing" secondItem="launch-image" secondAttribute="trailing" id="launch-trailing"/>
@@ -2268,11 +2370,22 @@ def generate_ios_assets(sources_dir: Path, icon_path: str, splash_gif: str):
                 </scene>
             </scenes>
             <resources>
-                <image name="SplashLaunch" width="640" height="360"/>
+                <image name="SplashLaunch" width="512" height="512"/>
             </resources>
         </document>
-        """,
+        """
+        .replace("__SPLASH_RED__", f"{red:.8f}")
+        .replace("__SPLASH_GREEN__", f"{green:.8f}")
+        .replace("__SPLASH_BLUE__", f"{blue:.8f}"),
     )
+
+    total_duration_ms = max(1000, sum(durations))
+    print(
+        "Splash iOS preparada: "
+        f"{frame_count} frames, {total_duration_ms} ms, "
+        f"recorte {crop_box[2] - crop_box[0]}x{crop_box[3] - crop_box[1]}"
+    )
+    return total_duration_ms
 
 
 def create_ios_project(
@@ -2285,6 +2398,14 @@ def create_ios_project(
     icon_path: str,
     splash_gif: str,
     team_id: str = "",
+    deployment_target: str = DEFAULT_IOS_DEPLOYMENT_TARGET,
+    system_bar_color: str = DEFAULT_IOS_SYSTEM_BAR_COLOR,
+    splash_background_color: str = DEFAULT_IOS_SPLASH_BACKGROUND_COLOR,
+    firebase_plist: str = "",
+    firebase_sdk_version: str = DEFAULT_IOS_FIREBASE_SDK_VERSION,
+    push_register_url: str = "",
+    camera_usage_description: str = DEFAULT_IOS_CAMERA_USAGE_DESCRIPTION,
+    photo_library_usage_description: str = DEFAULT_IOS_PHOTO_LIBRARY_USAGE_DESCRIPTION,
 ):
     validate_package(bundle_id)
     validate_url(url)
@@ -2295,36 +2416,99 @@ def create_ios_project(
         raise SystemExit("Versao iOS invalida. Use um formato como 1.0 ou 1.0.0")
     if team_id and not re.fullmatch(r"[A-Z0-9]{10}", team_id):
         raise SystemExit("Team ID invalido. Ele deve ter 10 letras/numeros")
+    if not re.fullmatch(r"\d+(\.\d+)?", deployment_target):
+        raise SystemExit("Deployment target iOS invalido. Use um formato como 15.0")
+    if float(deployment_target) < 15.0:
+        raise SystemExit("O deployment target iOS precisa ser 15.0 ou posterior")
+    if not re.fullmatch(r"\d+(\.\d+){1,2}", firebase_sdk_version):
+        raise SystemExit("Versao do Firebase iOS invalida. Use um formato como 12.19.2")
+
+    system_bar_color = validate_hex_color(system_bar_color, "--ios-system-bar-color")
+    splash_background_color = validate_hex_color(
+        splash_background_color,
+        "--ios-splash-background-color",
+    )
+    if not camera_usage_description.strip():
+        raise SystemExit("Informe uma descricao para o uso da camera no iOS")
+    if not photo_library_usage_description.strip():
+        raise SystemExit("Informe uma descricao para o acesso as fotos no iOS")
+
+    firebase_config_path = None
+    if firebase_plist:
+        firebase_config_path = Path(firebase_plist).expanduser().resolve()
+        if not firebase_config_path.exists():
+            raise SystemExit(f"GoogleService-Info.plist nao encontrado: {firebase_config_path}")
+        if firebase_config_path.name != "GoogleService-Info.plist":
+            print("Aviso: o arquivo Firebase iOS sera copiado como GoogleService-Info.plist")
+        try:
+            with firebase_config_path.open("rb") as firebase_file:
+                firebase_config = plistlib.load(firebase_file)
+        except Exception as exc:
+            raise SystemExit(f"GoogleService-Info.plist invalido: {exc}") from exc
+        firebase_bundle_id = str(firebase_config.get("BUNDLE_ID", "")).strip()
+        if firebase_bundle_id != bundle_id:
+            raise SystemExit(
+                "Bundle ID do GoogleService-Info.plist nao corresponde: "
+                f"esperado {bundle_id}, encontrado {firebase_bundle_id or '(vazio)'}"
+            )
+        if not push_register_url:
+            raise SystemExit("Informe --push-register-url ao habilitar Firebase no iOS")
+        validate_url(push_register_url)
 
     project_name = safe_project_name(app_name)
     project_dir = out_dir / f"{project_name}_ios"
     sources_dir = project_dir / "Sources"
 
-    team_setting = f"\n              DEVELOPMENT_TEAM: {team_id}" if team_id else ""
+    enable_firebase = firebase_config_path is not None
 
-    write_file(
-        project_dir / "project.yml",
-        f"""
-        name: {project_name}
-        options:
-          deploymentTarget:
-            iOS: "14.0"
-        targets:
-          {project_name}:
-            type: application
-            platform: iOS
-            sources:
-              - Sources
-            settings:
-              PRODUCT_BUNDLE_IDENTIFIER: {bundle_id}
-              INFOPLIST_FILE: Sources/Info.plist
-              GENERATE_INFOPLIST_FILE: NO
-              ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-              TARGETED_DEVICE_FAMILY: "1,2"
-              SWIFT_VERSION: "5.0"
-              CODE_SIGN_STYLE: Automatic{team_setting}
-        """,
-    )
+    project_lines = [
+        f"name: {project_name}",
+        "options:",
+        "  deploymentTarget:",
+        f'    iOS: "{deployment_target}"',
+    ]
+    if enable_firebase:
+        project_lines.extend([
+            "packages:",
+            "  Firebase:",
+            "    url: https://github.com/firebase/firebase-ios-sdk.git",
+            f'    from: "{firebase_sdk_version}"',
+        ])
+    project_lines.extend([
+        "targets:",
+        f"  {project_name}:",
+        "    type: application",
+        "    platform: iOS",
+        "    sources:",
+        "      - Sources",
+    ])
+    if enable_firebase:
+        project_lines.extend([
+            "    dependencies:",
+            "      - package: Firebase",
+            "        product: FirebaseAnalyticsCore",
+            "      - package: Firebase",
+            "        product: FirebaseMessaging",
+        ])
+    project_lines.extend([
+        "    settings:",
+        f"      PRODUCT_BUNDLE_IDENTIFIER: {bundle_id}",
+        "      INFOPLIST_FILE: Sources/Info.plist",
+        "      GENERATE_INFOPLIST_FILE: NO",
+        "      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon",
+        '      TARGETED_DEVICE_FAMILY: "1,2"',
+        '      SWIFT_VERSION: "5.0"',
+        "      CODE_SIGN_STYLE: Automatic",
+    ])
+    if team_id:
+        project_lines.append(f"      DEVELOPMENT_TEAM: {team_id}")
+    if enable_firebase:
+        project_lines.extend([
+            "      CODE_SIGN_ENTITLEMENTS: Sources/App.entitlements",
+            '      OTHER_LDFLAGS: "$(inherited) -ObjC"',
+        ])
+
+    write_file(project_dir / "project.yml", "\n".join(project_lines))
 
     allow_http = "http://" in url.lower()
 
@@ -2335,6 +2519,17 @@ def create_ios_project(
                 <true/>
             </dict>
     """ if allow_http else ""
+
+    firebase_info = (
+        """
+            <key>UIBackgroundModes</key>
+            <array>
+                <string>remote-notification</string>
+            </array>
+        """
+        if enable_firebase
+        else ""
+    )
 
     write_file(
         sources_dir / "Info.plist",
@@ -2364,6 +2559,10 @@ def create_ios_project(
             <false/>
             <key>LSRequiresIPhoneOS</key>
             <true/>
+            <key>NSCameraUsageDescription</key>
+            <string>{html.escape(camera_usage_description.strip())}</string>
+            <key>NSPhotoLibraryUsageDescription</key>
+            <string>{html.escape(photo_library_usage_description.strip())}</string>
             <key>UILaunchStoryboardName</key>
             <string>LaunchScreen</string>
             <key>UISupportedInterfaceOrientations</key>
@@ -2377,15 +2576,81 @@ def create_ios_project(
                 <string>UIInterfaceOrientationLandscapeLeft</string>
                 <string>UIInterfaceOrientationLandscapeRight</string>
             </array>
+            {firebase_info}
             {ats_config}
         </dict>
         </plist>
         """,
     )
 
-    write_file(
-        sources_dir / "AppDelegate.swift",
+    if enable_firebase:
+        app_delegate = """
+        import UIKit
+        import UserNotifications
+        import FirebaseCore
+        import FirebaseMessaging
+
+        @main
+        class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate, MessagingDelegate {
+            var window: UIWindow?
+
+            func application(
+                _ application: UIApplication,
+                didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+            ) -> Bool {
+                FirebaseApp.configure()
+                Messaging.messaging().delegate = self
+                UNUserNotificationCenter.current().delegate = self
+
+                UNUserNotificationCenter.current().requestAuthorization(
+                    options: [.alert, .badge, .sound]
+                ) { granted, error in
+                    if let error = error {
+                        print("Falha ao solicitar notificacoes: \\(error.localizedDescription)")
+                    }
+                    guard granted else { return }
+                    DispatchQueue.main.async {
+                        application.registerForRemoteNotifications()
+                    }
+                }
+
+                window = UIWindow(frame: UIScreen.main.bounds)
+                window?.rootViewController = ViewController()
+                window?.makeKeyAndVisible()
+                return true
+            }
+
+            func application(
+                _ application: UIApplication,
+                didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+            ) {
+                Messaging.messaging().apnsToken = deviceToken
+            }
+
+            func application(
+                _ application: UIApplication,
+                didFailToRegisterForRemoteNotificationsWithError error: Error
+            ) {
+                print("Falha ao registrar no APNs: \\(error.localizedDescription)")
+            }
+
+            func messaging(_ messaging: Messaging, didReceiveRegistrationToken fcmToken: String?) {
+                guard let fcmToken, !fcmToken.isEmpty else { return }
+                PushRegistrar.shared.updateToken(fcmToken)
+                NotificationCenter.default.post(name: .fcmTokenUpdated, object: nil)
+            }
+
+            func userNotificationCenter(
+                _ center: UNUserNotificationCenter,
+                willPresent notification: UNNotification,
+                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+            ) {
+                completionHandler([.banner, .badge, .sound])
+            }
+        }
         """
+    else:
+        app_delegate = """
         import UIKit
 
         @main
@@ -2402,7 +2667,51 @@ def create_ios_project(
                 return true
             }
         }
-        """,
+        """
+
+    write_file(sources_dir / "AppDelegate.swift", app_delegate)
+
+    splash_duration_ms = generate_ios_assets(
+        sources_dir=sources_dir,
+        icon_path=icon_path,
+        splash_gif=splash_gif,
+        splash_background_color=splash_background_color,
+    )
+    splash_minimum_seconds = splash_duration_ms / 1000.0
+    bar_red, bar_green, bar_blue = swift_color_components(system_bar_color)
+
+    firebase_observer_property = (
+        "private var firebaseTokenObserver: NSObjectProtocol?"
+        if enable_firebase
+        else ""
+    )
+    firebase_setup = (
+        """
+        firebaseTokenObserver = NotificationCenter.default.addObserver(
+            forName: .fcmTokenUpdated,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            PushRegistrar.shared.register(using: self.webView)
+        }
+        """
+        if enable_firebase
+        else ""
+    )
+    firebase_navigation_finished = (
+        "PushRegistrar.shared.register(using: webView)"
+        if enable_firebase
+        else ""
+    )
+    firebase_cleanup = (
+        """
+        if let firebaseTokenObserver {
+            NotificationCenter.default.removeObserver(firebaseTokenObserver)
+        }
+        """
+        if enable_firebase
+        else ""
     )
 
     view_controller = """
@@ -2413,23 +2722,42 @@ def create_ios_project(
         private let homeURL = URL(string: __URL__)!
         private var webView: WKWebView!
         private let progressView = UIProgressView(progressViewStyle: .default)
-            private var splashView: WKWebView?
-            private var splashStartedAt = Date()
+        private var splashView: WKWebView?
+        private var splashStartedAt = Date()
+        __FIREBASE_OBSERVER_PROPERTY__
+
+        override var preferredStatusBarStyle: UIStatusBarStyle {
+            .lightContent
+        }
 
         override func viewDidLoad() {
             super.viewDidLoad()
 
-            view.backgroundColor = UIColor(red: 0.0, green: 0.141, blue: 0.345, alpha: 1.0)
+            view.backgroundColor = UIColor(
+                red: __BAR_RED__,
+                green: __BAR_GREEN__,
+                blue: __BAR_BLUE__,
+                alpha: 1.0
+            )
 
             let config = WKWebViewConfiguration()
             config.allowsInlineMediaPlayback = true
+            let nativeAppMarker = WKUserScript(
+                source: "window.PirecalApp={platform:'ios',native:true};",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+            config.userContentController.addUserScript(nativeAppMarker)
 
             webView = WKWebView(frame: .zero, configuration: config)
             webView.navigationDelegate = self
             webView.translatesAutoresizingMaskIntoConstraints = false
+            webView.isOpaque = false
+            webView.backgroundColor = .white
 
             progressView.translatesAutoresizingMaskIntoConstraints = false
             progressView.progress = 0
+            progressView.progressTintColor = view.backgroundColor
 
             view.addSubview(webView)
             view.addSubview(progressView)
@@ -2438,7 +2766,7 @@ def create_ios_project(
                 webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
                 webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                webView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
 
                 progressView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
                 progressView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -2446,70 +2774,72 @@ def create_ios_project(
                 progressView.heightAnchor.constraint(equalToConstant: 3)
             ])
 
-                showSplash()
+            showSplash()
             webView.addObserver(self, forKeyPath: "estimatedProgress", options: .new, context: nil)
+            __FIREBASE_SETUP__
             webView.load(URLRequest(url: homeURL))
         }
 
-            private func showSplash() {
-                guard let gifURL = Bundle.main.url(forResource: "splash", withExtension: "gif") else {
-                    return
-                }
-
-                let splash = WKWebView(frame: .zero)
-                splash.isOpaque = false
-                splash.backgroundColor = UIColor(red: 72.0 / 255.0, green: 124.0 / 255.0, blue: 172.0 / 255.0, alpha: 1.0)
-                splash.scrollView.isScrollEnabled = false
-                splash.isUserInteractionEnabled = false
-                splash.translatesAutoresizingMaskIntoConstraints = false
-
-                let page = "<html><head><meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1'/><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#487cac}img{width:100%;height:100%;object-fit:cover}</style></head><body><img src='splash.gif'/></body></html>"
-                splash.loadHTMLString(page, baseURL: gifURL.deletingLastPathComponent())
-                view.addSubview(splash)
-
-                NSLayoutConstraint.activate([
-                    splash.topAnchor.constraint(equalTo: view.topAnchor),
-                    splash.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                    splash.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                    splash.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-                ])
-
-                splashView = splash
-                splashStartedAt = Date()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
-                    self?.hideSplash()
-                }
+        private func showSplash() {
+            guard let gifURL = Bundle.main.url(forResource: "splash", withExtension: "gif") else {
+                return
             }
 
-            private func hideSplash() {
-                guard let splash = splashView else { return }
-                let elapsed = Date().timeIntervalSince(splashStartedAt)
-                let delay = max(0.0, 1.5 - elapsed)
+            let splash = WKWebView(frame: .zero)
+            splash.isOpaque = false
+            splash.backgroundColor = UIColor(red: __SPLASH_RED__, green: __SPLASH_GREEN__, blue: __SPLASH_BLUE__, alpha: 1.0)
+            splash.scrollView.isScrollEnabled = false
+            splash.isUserInteractionEnabled = false
+            splash.translatesAutoresizingMaskIntoConstraints = false
 
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak splash] in
-                    guard let self = self, let splash = splash, self.splashView === splash else { return }
-                    UIView.animate(withDuration: 0.25, animations: {
-                        splash.alpha = 0
-                    }, completion: { _ in
-                        splash.removeFromSuperview()
-                        self.splashView = nil
-                    })
-                }
+            let page = "<html><head><meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1'/><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:__SPLASH_HEX__;display:flex;align-items:center;justify-content:center}img{display:block;max-width:82vw;max-height:64vh;width:auto;height:auto;object-fit:contain}</style></head><body><img src='splash.gif'/></body></html>"
+            splash.loadHTMLString(page, baseURL: gifURL.deletingLastPathComponent())
+            view.addSubview(splash)
+
+            NSLayoutConstraint.activate([
+                splash.topAnchor.constraint(equalTo: view.topAnchor),
+                splash.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                splash.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                splash.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            ])
+
+            splashView = splash
+            splashStartedAt = Date()
+            DispatchQueue.main.asyncAfter(deadline: .now() + __SPLASH_FALLBACK_SECONDS__) { [weak self] in
+                self?.hideSplash()
             }
+        }
 
-            func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-                if webView === self.webView {
-                    hideSplash()
-                }
+        private func hideSplash() {
+            guard let splash = splashView else { return }
+            let elapsed = Date().timeIntervalSince(splashStartedAt)
+            let delay = max(0.0, __SPLASH_MINIMUM_SECONDS__ - elapsed)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak splash] in
+                guard let self = self, let splash = splash, self.splashView === splash else { return }
+                UIView.animate(withDuration: 0.25, animations: {
+                    splash.alpha = 0
+                }, completion: { _ in
+                    splash.removeFromSuperview()
+                    self.splashView = nil
+                })
             }
+        }
 
-            func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            if webView === self.webView {
                 hideSplash()
+                __FIREBASE_NAVIGATION_FINISHED__
             }
+        }
 
-            func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-                hideSplash()
-            }
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            hideSplash()
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            hideSplash()
+        }
 
         override func observeValue(
             forKeyPath keyPath: String?,
@@ -2525,22 +2855,137 @@ def create_ios_project(
 
         deinit {
             webView?.removeObserver(self, forKeyPath: "estimatedProgress")
+            __FIREBASE_CLEANUP__
         }
     }
     """
 
-    view_controller = textwrap.dedent(view_controller).replace("__URL__", json.dumps(url))
+    splash_red, splash_green, splash_blue = swift_color_components(splash_background_color)
+    view_controller = (
+        textwrap.dedent(view_controller)
+        .replace("__URL__", json.dumps(url))
+        .replace("__BAR_RED__", f"{bar_red:.8f}")
+        .replace("__BAR_GREEN__", f"{bar_green:.8f}")
+        .replace("__BAR_BLUE__", f"{bar_blue:.8f}")
+        .replace("__SPLASH_RED__", f"{splash_red:.8f}")
+        .replace("__SPLASH_GREEN__", f"{splash_green:.8f}")
+        .replace("__SPLASH_BLUE__", f"{splash_blue:.8f}")
+        .replace("__SPLASH_HEX__", splash_background_color)
+        .replace("__SPLASH_MINIMUM_SECONDS__", f"{splash_minimum_seconds:.3f}")
+        .replace("__SPLASH_FALLBACK_SECONDS__", f"{splash_minimum_seconds + 5.0:.3f}")
+        .replace("__FIREBASE_OBSERVER_PROPERTY__", firebase_observer_property)
+        .replace(
+            "__FIREBASE_SETUP__",
+            textwrap.dedent(firebase_setup).strip().replace("\n", "\n        "),
+        )
+        .replace("__FIREBASE_NAVIGATION_FINISHED__", firebase_navigation_finished)
+        .replace(
+            "__FIREBASE_CLEANUP__",
+            textwrap.dedent(firebase_cleanup).strip().replace("\n", "\n        "),
+        )
+    )
     write_file(sources_dir / "ViewController.swift", view_controller)
 
-    generate_ios_assets(
-        sources_dir=sources_dir,
-        icon_path=icon_path,
-        splash_gif=splash_gif,
-    )
+    if enable_firebase:
+        shutil.copy2(firebase_config_path, sources_dir / "GoogleService-Info.plist")
+
+        write_file(
+            sources_dir / "App.entitlements",
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>aps-environment</key>
+                <string>production</string>
+            </dict>
+            </plist>
+            """,
+        )
+
+        push_registrar = """
+        import Foundation
+        import UIKit
+        import WebKit
+
+        extension Notification.Name {
+            static let fcmTokenUpdated = Notification.Name("fcmTokenUpdated")
+        }
+
+        final class PushRegistrar {
+            static let shared = PushRegistrar()
+
+            private let endpoint = URL(string: __PUSH_REGISTER_URL__)!
+            private let tokenKey = "pirecal.fcmToken"
+
+            private init() {}
+
+            func updateToken(_ token: String) {
+                UserDefaults.standard.set(token, forKey: tokenKey)
+            }
+
+            func register(using webView: WKWebView) {
+                guard
+                    let token = UserDefaults.standard.string(forKey: tokenKey),
+                    !token.isEmpty
+                else {
+                    return
+                }
+
+                webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [endpoint] cookies in
+                    let matchingCookies = cookies.filter { cookie in
+                        guard let host = endpoint.host else { return false }
+                        let domain = cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                        return host == domain || host.hasSuffix("." + domain)
+                    }
+
+                    guard !matchingCookies.isEmpty else { return }
+
+                    var request = URLRequest(url: endpoint)
+                    request.httpMethod = "POST"
+                    request.timeoutInterval = 15
+                    request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+                    request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+                    let cookieHeaders = HTTPCookie.requestHeaderFields(with: matchingCookies)
+                    cookieHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+
+                    let payload: [String: Any] = [
+                        "platform": "ios",
+                        "fcm_token": token,
+                        "package_name": Bundle.main.bundleIdentifier ?? "",
+                        "app_version": Bundle.main.object(
+                            forInfoDictionaryKey: "CFBundleShortVersionString"
+                        ) as? String ?? "",
+                        "device_model": UIDevice.current.model,
+                        "ios_version": UIDevice.current.systemVersion
+                    ]
+
+                    request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+                    URLSession.shared.dataTask(with: request) { _, response, error in
+                        if let error {
+                            print("Erro ao registrar token FCM: \\(error.localizedDescription)")
+                            return
+                        }
+                        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                            print("Falha ao registrar token FCM. HTTP \\(http.statusCode)")
+                        }
+                    }.resume()
+                }
+            }
+        }
+        """
+        push_registrar = textwrap.dedent(push_registrar).replace(
+            "__PUSH_REGISTER_URL__",
+            json.dumps(push_register_url),
+        )
+        write_file(sources_dir / "PushRegistrar.swift", push_registrar)
 
     print(f"\nProjeto iOS criado em: {project_dir}")
     print(f"Versao iOS: {version_name} ({version_code})")
     print("Icone, launch screen e splash animada incluidos.")
+    if enable_firebase:
+        print(f"Firebase Analytics e Messaging habilitados (SDK {firebase_sdk_version}).")
     print("Para gerar .xcodeproj no macOS, instale XcodeGen e rode:")
     print(f"  cd {project_dir}")
     print("  xcodegen")
@@ -2588,25 +3033,26 @@ def main():
         description="Gera app nativo WebView Android/iOS para uma URL publicada."
     )
 
-    parser.add_argument("--url", required=True, help="URL do portal. Ex: https://agenda.seudominio.com")
-    parser.add_argument("--name", required=True, help="Nome do aplicativo. Ex: Pirecal Agenda")
-    parser.add_argument("--package", required=True, help="Package/bundle id. Ex: br.com.pirecal.agenda")
+    parser.add_argument("--url", default=DEFAULT_APP_URL, help="URL do portal")
+    parser.add_argument("--name", default=DEFAULT_APP_NAME, help="Nome do aplicativo")
+    parser.add_argument("--package", default=DEFAULT_PACKAGE, help="Package/bundle id")
     parser.add_argument("--out", default="./saida_app", help="Pasta de saída")
     parser.add_argument("--platform", choices=["android", "ios", "both"], default="android")
     parser.add_argument("--build-apk", action="store_true", help="Gera APK debug automaticamente no Android")
     parser.add_argument("--build-aab", action="store_true", help="Gera AAB release assinado automaticamente no Android")
     parser.add_argument("--allow-http", action="store_true", help="Permite HTTP sem HTTPS no Android")
-    parser.add_argument("--version-code", type=int, default=1)
-    parser.add_argument("--version-name", default="1.0.0")
-    parser.add_argument("--team-id", default="", help="Apple Developer Team ID para assinatura iOS")
+    parser.add_argument("--version-code", type=int, default=DEFAULT_VERSION_CODE)
+    parser.add_argument("--version-name", default=DEFAULT_VERSION_NAME)
+    parser.add_argument("--team-id", default=DEFAULT_APPLE_TEAM_ID, help="Apple Developer Team ID para assinatura iOS")
     parser.add_argument("--agp-version", default=DEFAULT_AGP_VERSION)
     parser.add_argument("--gradle-version", default=DEFAULT_GRADLE_VERSION)
     parser.add_argument("--compile-sdk", type=int, default=DEFAULT_COMPILE_SDK)
     parser.add_argument("--min-sdk", type=int, default=DEFAULT_MIN_SDK)
     parser.add_argument("--target-sdk", type=int, default=DEFAULT_TARGET_SDK)
-    parser.add_argument("--icon", help="Caminho do ícone PNG quadrado. Ex: C:\\icones\\pirecal.png")
+    parser.add_argument("--icon", default=DEFAULT_ICON_PATH, help="Caminho do ícone PNG quadrado")
     parser.add_argument(
         "--splash-gif",
+        default=DEFAULT_SPLASH_PATH,
         help=(
             "Caminho do GIF da splash. O gerador recorta automaticamente "
             "as margens transparentes e centraliza em fundo branco."
@@ -2614,9 +3060,16 @@ def main():
     )
 
     parser.add_argument("--firebase-json", help="Caminho para o google-services.json. Se informado, habilita Firebase Messaging no Android.")
-    parser.add_argument("--push-register-url", default="", help="Endpoint do seu backend para registrar user_id + token FCM.")
+    parser.add_argument("--firebase-plist", default=DEFAULT_IOS_FIREBASE_PLIST, help="GoogleService-Info.plist do Firebase iOS")
+    parser.add_argument("--push-register-url", default=DEFAULT_PUSH_REGISTER_URL, help="Endpoint do backend para registrar o token FCM")
     parser.add_argument("--firebase-bom-version", default=DEFAULT_FIREBASE_BOM_VERSION)
     parser.add_argument("--google-services-version", default=DEFAULT_GOOGLE_SERVICES_VERSION)
+    parser.add_argument("--ios-deployment-target", default=DEFAULT_IOS_DEPLOYMENT_TARGET)
+    parser.add_argument("--ios-firebase-sdk-version", default=DEFAULT_IOS_FIREBASE_SDK_VERSION)
+    parser.add_argument("--ios-system-bar-color", default=DEFAULT_IOS_SYSTEM_BAR_COLOR)
+    parser.add_argument("--ios-splash-background-color", default=DEFAULT_IOS_SPLASH_BACKGROUND_COLOR)
+    parser.add_argument("--ios-camera-usage-description", default=DEFAULT_IOS_CAMERA_USAGE_DESCRIPTION)
+    parser.add_argument("--ios-photo-library-usage-description", default=DEFAULT_IOS_PHOTO_LIBRARY_USAGE_DESCRIPTION)
 
     args = parser.parse_args()
 
@@ -2670,6 +3123,14 @@ def main():
             icon_path=args.icon,
             splash_gif=args.splash_gif,
             team_id=args.team_id,
+            deployment_target=args.ios_deployment_target,
+            system_bar_color=args.ios_system_bar_color,
+            splash_background_color=args.ios_splash_background_color,
+            firebase_plist=args.firebase_plist,
+            firebase_sdk_version=args.ios_firebase_sdk_version,
+            push_register_url=args.push_register_url,
+            camera_usage_description=args.ios_camera_usage_description,
+            photo_library_usage_description=args.ios_photo_library_usage_description,
         )
 
 

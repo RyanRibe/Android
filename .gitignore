@@ -1,5 +1,5 @@
 saida_app/
-PORTARIA/
+PORTARIA_APK/
 OLD.VERSIONS/
 IOS/
 
@@ -23,3 +23,6 @@ build/
 
 # Local configuration
 local.properties
+
+*.plist
+!GoogleService-Info.plist
