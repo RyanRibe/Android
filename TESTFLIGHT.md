@@ -261,6 +261,10 @@ O alvo foi atualizado de iOS 14.0 para 15.0, atendendo ao requisito anunciado pe
 
 Se o archive mostrar mensagens como `FirebaseMessaging does not support provisioning profiles`, confira se o comando `xcodebuild` não contém `PROVISIONING_PROFILE_SPECIFIER`, `CODE_SIGN_STYLE` ou `CODE_SIGN_IDENTITY` globais. Esses parâmetros seriam herdados por todas as dependências. Neste projeto, a configuração fica no alvo do app e o comando passa apenas `APP_PROVISIONING_PROFILE`, que é uma variável auxiliar usada por esse alvo.
 
+### `expected hexadecimal code in braces after unicode escape`
+
+O JSON usado para incorporar a ponte JavaScript no Swift estava convertendo caracteres acentuados, como `ó`, para sequências `\u00f3`. Esse escape é válido em JavaScript, mas não dentro de uma string Swift. O gerador agora preserva esses caracteres em UTF-8 literal com `ensure_ascii=False`.
+
 ### Build verde, mas ausente no TestFlight
 
 Estas mensagens confirmam a entrega:

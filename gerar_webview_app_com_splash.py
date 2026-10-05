@@ -3076,7 +3076,10 @@ def create_ios_project(
         .replace("__BAR_RED__", f"{bar_red:.8f}")
         .replace("__BAR_GREEN__", f"{bar_green:.8f}")
         .replace("__BAR_BLUE__", f"{bar_blue:.8f}")
-        .replace("__SYSTEM_BARS_JAVASCRIPT__", json.dumps(textwrap.dedent(system_bars_javascript).strip()))
+        .replace(
+            "__SYSTEM_BARS_JAVASCRIPT__",
+            json.dumps(textwrap.dedent(system_bars_javascript).strip(), ensure_ascii=False),
+        )
         .replace("__SPLASH_RED__", f"{splash_red:.8f}")
         .replace("__SPLASH_GREEN__", f"{splash_green:.8f}")
         .replace("__SPLASH_BLUE__", f"{splash_blue:.8f}")
