@@ -185,6 +185,8 @@ Depois abra **GitHub > Actions > Publicar iOS no TestFlight > Run workflow**, in
 
 O fluxo instala XcodeGen e Transporter, resolve Firebase via Swift Package Manager, gera o projeto, importa o certificado, baixa e valida o profile, cria o archive, exporta/preserva o IPA e envia ao TestFlight.
 
+A assinatura manual fica configurada somente no alvo principal do aplicativo. O workflow fornece o nome do provisioning profile pela variável de compilação `APP_PROVISIONING_PROFILE`; assim, o profile da Portaria não é aplicado aos pacotes Swift do Firebase.
+
 O job usa `wait-for-processing: false`: verde confirma que a Apple recebeu o IPA. O processamento continua em segundo plano. Não execute novamente apenas porque o build ainda não apareceu.
 
 ## 11. Testar no iPhone
@@ -237,6 +239,10 @@ O app suportava iPad sem todas as orientações exigidas para multitarefa. O `In
 ### Aviso `90068: Deployment target muito baixo`
 
 O alvo foi atualizado de iOS 14.0 para 15.0, atendendo ao requisito anunciado pela Apple para abril de 2027 e ao mínimo do Firebase usado.
+
+### Firebase informa que não aceita provisioning profile
+
+Se o archive mostrar mensagens como `FirebaseMessaging does not support provisioning profiles`, confira se o comando `xcodebuild` não contém `PROVISIONING_PROFILE_SPECIFIER`, `CODE_SIGN_STYLE` ou `CODE_SIGN_IDENTITY` globais. Esses parâmetros seriam herdados por todas as dependências. Neste projeto, a configuração fica no alvo do app e o comando passa apenas `APP_PROVISIONING_PROFILE`, que é uma variável auxiliar usada por esse alvo.
 
 ### Build verde, mas ausente no TestFlight
 

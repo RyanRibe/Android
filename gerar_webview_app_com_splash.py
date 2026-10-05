@@ -2498,10 +2498,16 @@ def create_ios_project(
         "      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon",
         '      TARGETED_DEVICE_FAMILY: "1,2"',
         '      SWIFT_VERSION: "5.0"',
-        "      CODE_SIGN_STYLE: Automatic",
     ])
     if team_id:
-        project_lines.append(f"      DEVELOPMENT_TEAM: {team_id}")
+        project_lines.extend([
+            f"      DEVELOPMENT_TEAM: {team_id}",
+            "      CODE_SIGN_STYLE: Manual",
+            '      CODE_SIGN_IDENTITY: "Apple Distribution"',
+            '      PROVISIONING_PROFILE_SPECIFIER: "$(APP_PROVISIONING_PROFILE)"',
+        ])
+    else:
+        project_lines.append("      CODE_SIGN_STYLE: Automatic")
     if enable_firebase:
         project_lines.extend([
             "      CODE_SIGN_ENTITLEMENTS: Sources/App.entitlements",
