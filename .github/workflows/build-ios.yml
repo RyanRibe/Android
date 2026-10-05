@@ -1,0 +1,99 @@
+name: Compilar app iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_url:
+        description: URL HTTPS que o aplicativo abrirá
+        required: true
+        default: https://example.com
+        type: string
+      app_name:
+        description: Nome do aplicativo
+        required: true
+        default: Pirecal Agendamento
+        type: string
+      bundle_id:
+        description: Bundle ID do aplicativo
+        required: true
+        default: br.com.pirecal.agendamento
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios-simulator:
+    name: Compilar para iOS Simulator
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Baixar o repositorio
+        uses: actions/checkout@v7
+
+      - name: Configurar Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install Pillow
+          brew install xcodegen
+
+      - name: Gerar projeto iOS
+        env:
+          APP_URL: ${{ inputs.app_url }}
+          APP_NAME: ${{ inputs.app_name }}
+          BUNDLE_ID: ${{ inputs.bundle_id }}
+        run: |
+          python gerar_webview_app_assigned.py \
+            --url "$APP_URL" \
+            --name "$APP_NAME" \
+            --package "$BUNDLE_ID" \
+            --platform ios \
+            --out "$RUNNER_TEMP/ios-output"
+
+          PROJECT_YML="$(find "$RUNNER_TEMP/ios-output" -name project.yml -print -quit)"
+          test -n "$PROJECT_YML"
+          PROJECT_DIR="$(dirname "$PROJECT_YML")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Gerar projeto do Xcode
+        run: |
+          cd "$PROJECT_DIR"
+          xcodegen generate
+          XCODE_PROJECT="$(find . -maxdepth 1 -name '*.xcodeproj' -print -quit)"
+          test -n "$XCODE_PROJECT"
+          echo "XCODE_PROJECT=$XCODE_PROJECT" >> "$GITHUB_ENV"
+
+      - name: Compilar sem assinatura
+        run: |
+          cd "$PROJECT_DIR"
+          SCHEME="$(xcodebuild -project "$XCODE_PROJECT" -list -json | python -c 'import json,sys; print(json.load(sys.stdin)["project"]["schemes"][0])')"
+          test -n "$SCHEME"
+          xcodebuild \
+            -project "$XCODE_PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            clean build
+
+      - name: Preparar aplicativo
+        run: |
+          APP_PATH="$(find "$RUNNER_TEMP/DerivedData/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$RUNNER_TEMP/ios-simulator-app.zip"
+
+      - name: Publicar aplicativo compilado
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-simulator-app
+          path: ${{ runner.temp }}/ios-simulator-app.zip
+          if-no-files-found: error
+          retention-days: 14
