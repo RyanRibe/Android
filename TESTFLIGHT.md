@@ -159,12 +159,20 @@ No começo de `.github/workflows/testflight-ios.yml`, altere somente o bloco `en
 - `APP_NAME`, `APP_URL`, `BUNDLE_ID`, `APPLE_TEAM_ID`;
 - `GENERATOR_SCRIPT`, `ICON_PATH`, `SPLASH_PATH`;
 - `FIREBASE_PLIST_PATH`, `PUSH_REGISTER_URL`;
-- `IOS_DEPLOYMENT_TARGET`, `IOS_FIREBASE_SDK_VERSION`;
+- `IOS_DEPLOYMENT_TARGET`, `IOS_TARGETED_DEVICE_FAMILY`, `IOS_FIREBASE_SDK_VERSION`;
 - `IOS_SYSTEM_BAR_COLOR`, `IOS_SPLASH_BACKGROUND_COLOR`;
 - `IOS_CAMERA_USAGE_DESCRIPTION`, `IOS_PHOTO_LIBRARY_USAGE_DESCRIPTION`;
 - `ARCHIVE_NAME` e `ARTIFACT_PREFIX`.
 
 O começo de `gerar_webview_app_com_splash.py` contém os mesmos padrões. Argumentos do YAML têm prioridade. O número do build usa `GITHUB_RUN_NUMBER`; a versão visível é informada em **Run workflow**.
+
+Para publicar somente para iPhone, mantenha:
+
+```yaml
+IOS_TARGETED_DEVICE_FAMILY: "1"
+```
+
+Use `"1,2"` apenas quando o aplicativo também estiver preparado e validado para iPad. O gerador inclui as orientações específicas do iPad somente nessa configuração.
 
 ## 10. Enviar e executar
 

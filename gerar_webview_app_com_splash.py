@@ -36,6 +36,7 @@ DEFAULT_SPLASH_PATH = "logo.gif"
 DEFAULT_IOS_FIREBASE_PLIST = "GoogleService-Info.plist"
 DEFAULT_PUSH_REGISTER_URL = "https://mobile.pirecal.com.br:8703/api/register_device.php"
 DEFAULT_IOS_DEPLOYMENT_TARGET = "15.0"
+DEFAULT_IOS_TARGETED_DEVICE_FAMILY = "1"  # 1 = iPhone; 1,2 = iPhone e iPad
 DEFAULT_IOS_FIREBASE_SDK_VERSION = "12.19.2"
 DEFAULT_IOS_SYSTEM_BAR_COLOR = "#075D2B"
 DEFAULT_IOS_SPLASH_BACKGROUND_COLOR = "#FFFFFF"
@@ -2405,6 +2406,7 @@ def create_ios_project(
     splash_gif: str,
     team_id: str = "",
     deployment_target: str = DEFAULT_IOS_DEPLOYMENT_TARGET,
+    targeted_device_family: str = DEFAULT_IOS_TARGETED_DEVICE_FAMILY,
     system_bar_color: str = DEFAULT_IOS_SYSTEM_BAR_COLOR,
     splash_background_color: str = DEFAULT_IOS_SPLASH_BACKGROUND_COLOR,
     firebase_plist: str = "",
@@ -2415,6 +2417,9 @@ def create_ios_project(
 ):
     validate_package(bundle_id)
     validate_url(url)
+
+    if targeted_device_family not in {"1", "1,2"}:
+        raise SystemExit("A familia iOS deve ser '1' (iPhone) ou '1,2' (iPhone e iPad)")
 
     if version_code < 1:
         raise SystemExit("O version-code do iOS precisa ser maior que zero")
@@ -2502,7 +2507,7 @@ def create_ios_project(
         "      INFOPLIST_FILE: Sources/Info.plist",
         "      GENERATE_INFOPLIST_FILE: NO",
         "      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon",
-        '      TARGETED_DEVICE_FAMILY: "1,2"',
+        f'      TARGETED_DEVICE_FAMILY: "{targeted_device_family}"',
         '      SWIFT_VERSION: "5.0"',
     ])
     if team_id:
@@ -2540,6 +2545,20 @@ def create_ios_project(
             </array>
         """
         if enable_firebase
+        else ""
+    )
+
+    ipad_orientations = (
+        """
+            <key>UISupportedInterfaceOrientations~ipad</key>
+            <array>
+                <string>UIInterfaceOrientationPortrait</string>
+                <string>UIInterfaceOrientationPortraitUpsideDown</string>
+                <string>UIInterfaceOrientationLandscapeLeft</string>
+                <string>UIInterfaceOrientationLandscapeRight</string>
+            </array>
+        """
+        if "2" in targeted_device_family.split(",")
         else ""
     )
 
@@ -2581,13 +2600,7 @@ def create_ios_project(
             <array>
                 <string>UIInterfaceOrientationPortrait</string>
             </array>
-            <key>UISupportedInterfaceOrientations~ipad</key>
-            <array>
-                <string>UIInterfaceOrientationPortrait</string>
-                <string>UIInterfaceOrientationPortraitUpsideDown</string>
-                <string>UIInterfaceOrientationLandscapeLeft</string>
-                <string>UIInterfaceOrientationLandscapeRight</string>
-            </array>
+            {ipad_orientations}
             {firebase_info}
             {ats_config}
         </dict>
@@ -3278,6 +3291,12 @@ def main():
     parser.add_argument("--firebase-bom-version", default=DEFAULT_FIREBASE_BOM_VERSION)
     parser.add_argument("--google-services-version", default=DEFAULT_GOOGLE_SERVICES_VERSION)
     parser.add_argument("--ios-deployment-target", default=DEFAULT_IOS_DEPLOYMENT_TARGET)
+    parser.add_argument(
+        "--ios-targeted-device-family",
+        choices=["1", "1,2"],
+        default=DEFAULT_IOS_TARGETED_DEVICE_FAMILY,
+        help="Familias iOS: 1 para iPhone; 1,2 para iPhone e iPad",
+    )
     parser.add_argument("--ios-firebase-sdk-version", default=DEFAULT_IOS_FIREBASE_SDK_VERSION)
     parser.add_argument("--ios-system-bar-color", default=DEFAULT_IOS_SYSTEM_BAR_COLOR)
     parser.add_argument("--ios-splash-background-color", default=DEFAULT_IOS_SPLASH_BACKGROUND_COLOR)
@@ -3337,6 +3356,7 @@ def main():
             splash_gif=args.splash_gif,
             team_id=args.team_id,
             deployment_target=args.ios_deployment_target,
+            targeted_device_family=args.ios_targeted_device_family,
             system_bar_color=args.ios_system_bar_color,
             splash_background_color=args.ios_splash_background_color,
             firebase_plist=args.firebase_plist,
