@@ -174,6 +174,8 @@ IOS_TARGETED_DEVICE_FAMILY: "1"
 
 Use `"1,2"` apenas quando o aplicativo também estiver preparado e validado para iPad. O gerador inclui as orientações específicas do iPad somente nessa configuração.
 
+O aplicativo iOS também possui uma tela nativa para falhas de carregamento. Erros de conexão, respostas HTTP de erro e páginas que permanecem vazias exibem uma mensagem com o botão **Tentar novamente**, em vez de deixar o usuário diante de uma tela branca.
+
 ## 10. Enviar e executar
 
 Antes do próximo build, conclua o passo 6 para o profile incluir Push Notifications.

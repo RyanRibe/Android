@@ -2904,8 +2904,11 @@ def create_ios_project(
         private let homeURL = URL(string: __URL__)!
         private var webView: WKWebView!
         private let progressView = UIProgressView(progressViewStyle: .default)
+        private let networkErrorView = UIView()
+        private let networkErrorMessageLabel = UILabel()
         private var splashView: WKWebView?
         private var splashStartedAt = Date()
+        private var navigationGeneration = 0
         __FIREBASE_OBSERVER_PROPERTY__
 
         private var currentStatusBarStyle: UIStatusBarStyle = .darkContent
@@ -2955,6 +2958,7 @@ def create_ios_project(
 
             view.addSubview(webView)
             view.addSubview(progressView)
+            configureNetworkErrorView()
 
             NSLayoutConstraint.activate([
                 webView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -2972,6 +2976,111 @@ def create_ios_project(
             webView.addObserver(self, forKeyPath: "estimatedProgress", options: .new, context: nil)
             __FIREBASE_SETUP__
             webView.load(URLRequest(url: homeURL))
+        }
+
+        private func configureNetworkErrorView() {
+            networkErrorView.translatesAutoresizingMaskIntoConstraints = false
+            networkErrorView.backgroundColor = .systemBackground
+            networkErrorView.isHidden = true
+            networkErrorView.accessibilityIdentifier = "network-error-view"
+
+            let icon = UIImageView(image: UIImage(systemName: "wifi.exclamationmark"))
+            icon.translatesAutoresizingMaskIntoConstraints = false
+            icon.tintColor = UIColor(red: __BAR_RED__, green: __BAR_GREEN__, blue: __BAR_BLUE__, alpha: 1.0)
+            icon.contentMode = .scaleAspectFit
+
+            let title = UILabel()
+            title.translatesAutoresizingMaskIntoConstraints = false
+            title.text = "Não foi possível acessar o servidor"
+            title.font = .preferredFont(forTextStyle: .title2)
+            title.adjustsFontForContentSizeCategory = true
+            title.textAlignment = .center
+            title.numberOfLines = 0
+
+            networkErrorMessageLabel.translatesAutoresizingMaskIntoConstraints = false
+            networkErrorMessageLabel.text = "Verifique sua conexão e tente novamente."
+            networkErrorMessageLabel.font = .preferredFont(forTextStyle: .body)
+            networkErrorMessageLabel.adjustsFontForContentSizeCategory = true
+            networkErrorMessageLabel.textColor = .secondaryLabel
+            networkErrorMessageLabel.textAlignment = .center
+            networkErrorMessageLabel.numberOfLines = 0
+
+            let retryButton = UIButton(type: .system)
+            retryButton.translatesAutoresizingMaskIntoConstraints = false
+            retryButton.setTitle("Tentar novamente", for: .normal)
+            retryButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
+            retryButton.addTarget(self, action: #selector(retryLoading), for: .touchUpInside)
+
+            let stack = UIStackView(arrangedSubviews: [icon, title, networkErrorMessageLabel, retryButton])
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            stack.axis = .vertical
+            stack.alignment = .fill
+            stack.spacing = 16
+            stack.setCustomSpacing(24, after: networkErrorMessageLabel)
+
+            networkErrorView.addSubview(stack)
+            view.addSubview(networkErrorView)
+
+            NSLayoutConstraint.activate([
+                networkErrorView.topAnchor.constraint(equalTo: view.topAnchor),
+                networkErrorView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                networkErrorView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                networkErrorView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+                stack.centerYAnchor.constraint(equalTo: networkErrorView.safeAreaLayoutGuide.centerYAnchor),
+                stack.leadingAnchor.constraint(equalTo: networkErrorView.safeAreaLayoutGuide.leadingAnchor, constant: 32),
+                stack.trailingAnchor.constraint(equalTo: networkErrorView.safeAreaLayoutGuide.trailingAnchor, constant: -32),
+                icon.heightAnchor.constraint(equalToConstant: 56)
+            ])
+        }
+
+        @objc private func retryLoading() {
+            networkErrorView.isHidden = true
+            progressView.isHidden = false
+            progressView.progress = 0
+            webView.load(URLRequest(url: homeURL, cachePolicy: .reloadIgnoringLocalCacheData))
+        }
+
+        private func showNetworkError(message: String = "Verifique sua conexão e tente novamente.") {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.navigationGeneration += 1
+                self.networkErrorMessageLabel.text = message
+                self.networkErrorView.isHidden = false
+                self.view.bringSubviewToFront(self.networkErrorView)
+                self.progressView.isHidden = true
+                self.hideSplash()
+            }
+        }
+
+        private func scheduleBlankPageCheck() {
+            let expectedGeneration = navigationGeneration
+            // Aguarda aplicações web que montam a interface após chamadas assíncronas.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+                guard let self = self,
+                      self.navigationGeneration == expectedGeneration,
+                      self.networkErrorView.isHidden,
+                      !self.webView.isLoading else { return }
+
+                let script = \"\"\"
+                (() => {
+                    const body = document.body;
+                    if (!body) return true;
+                    const text = (body.innerText || '').trim();
+                    const visibleContent = body.querySelector(
+                        'img, video, canvas, iframe, form, input, button, svg, [role="progressbar"]'
+                    );
+                    return text.length === 0 && !visibleContent;
+                })();
+                \"\"\"
+
+                self.webView.evaluateJavaScript(script) { [weak self] result, error in
+                    guard error == nil, result as? Bool == true else { return }
+                    self?.showNetworkError(
+                        message: "O servidor respondeu sem conteúdo. Tente novamente em alguns instantes."
+                    )
+                }
+            }
         }
 
         private func showSplash() {
@@ -3020,19 +3129,50 @@ def create_ios_project(
             }
         }
 
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            guard webView === self.webView else { return }
+            navigationGeneration += 1
+            networkErrorView.isHidden = true
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             if webView === self.webView {
                 hideSplash()
+                scheduleBlankPageCheck()
                 __FIREBASE_NAVIGATION_FINISHED__
             }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            hideSplash()
+            handleNavigationError(error)
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            hideSplash()
+            handleNavigationError(error)
+        }
+
+        private func handleNavigationError(_ error: Error) {
+            let nsError = error as NSError
+            guard nsError.code != NSURLErrorCancelled else { return }
+            showNetworkError()
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationResponse: WKNavigationResponse,
+            decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+        ) {
+            if navigationResponse.isForMainFrame,
+               let response = navigationResponse.response as? HTTPURLResponse,
+               !(200...399).contains(response.statusCode) {
+                showNetworkError(
+                    message: "O servidor recusou o acesso (erro \\(response.statusCode)). Tente novamente mais tarde."
+                )
+                decisionHandler(.cancel)
+                return
+            }
+
+            decisionHandler(.allow)
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
